@@ -17,7 +17,6 @@ import traceback
 import urllib
 from config import *
 from aiohttp import web
-import threading
 import sys
 
 # Variables globales
@@ -36,57 +35,22 @@ async def health_check(request):
 async def webserver():
     """Servidor web forzando puerto 5000 para Render"""
     app = web.Application()
-    
-    # Agregar más endpoints para mejor monitoreo
     app.router.add_get('/', health_check)
     app.router.add_get('/health', health_check)
     app.router.add_get('/status', lambda r: web.Response(text='Online'))
     
-    # FORZAR PUERTO 5000 - Render permite este puerto
+    # FORZAR PUERTO 5000
     port = 5000
     
-    # Configurar opciones del servidor
     runner = web.AppRunner(app)
     await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
     
-    # Intentar con puerto 5000 específicamente
-    try:
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        print(f"✅ Servidor web en puerto {port} - http://0.0.0.0:{port}")
-        return runner, site
-    except OSError as e:
-        # Si falla el 5000, intentar con puerto dinámico
-        print(f"⚠️  Puerto {port} no disponible: {e}")
-        print("🔄 Intentando con puerto dinámico...")
-        port = int(os.environ.get('PORT', 10000))
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        print(f"✅ Servidor web en puerto {port} - http://0.0.0.0:{port}")
-        return runner, site
-
-def run_webserver():
-    """Ejecutar servidor web en hilo separado"""
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        runner, site = loop.run_until_complete(webserver())
-        
-        # Información adicional
-        print("=" * 50)
-        print("🌐 SERVICIO WEB INICIADO")
-        print(f"📍 Puerto: {site._server.sockets[0].getsockname()[1]}")
-        print(f"📡 Host: 0.0.0.0")
-        print("=" * 50)
-        
-        # Mantener el servidor activo
-        try:
-            loop.run_forever()
-        except KeyboardInterrupt:
-            print("🛑 Servidor web detenido")
-    except Exception as e:
-        print(f"❌ Error en servidor web: {e}")
-        traceback.print_exc()
+    print(f"✅ Servidor web en puerto {port} - http://0.0.0.0:{port}")
+    print(f"🌐 URL de salud: https://tu-app.onrender.com/health")
+    
+    return runner, app
 
 # ==================== FUNCIONES DEL BOT ====================
 def mydata(username):
@@ -549,49 +513,54 @@ def convertbytes(size):
     
     return normalbytes
 
-# ==================== MAIN ====================
-def main():
-    """Función principal"""
+# ==================== MAIN CORREGIDO ====================
+async def main():
+    """Función principal CORREGIDA para Render"""
     global botclient
     
     print("=" * 60)
-    print("🚀 INICIANDO BOT DE TELEGRAM CON PUERTO 5000")
+    print("🚀 INICIANDO BOT DE TELEGRAM EN RENDER")
     print("=" * 60)
     print(f"👤 Owner: {OWNER}")
-    print(f"📡 Puerto forzado: 5000")
+    print(f"📡 Puerto: 5000")
     print(f"🕐 Hora: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
     
-    # Inicializar el cliente UNA SOLA VEZ
-    if botclient is None:
-        botclient = Client('bot', api_id=api_id, api_hash=api_hash)
-        botclient.start(bot_token=bot_token)
-    
-    # Iniciar servidor web en puerto 5000
+    # 1. INICIAR SERVICIO WEB PRIMERO (Render lo necesita)
     print("🌐 Iniciando servidor web en puerto 5000...")
-    server_thread = threading.Thread(target=run_webserver, daemon=True)
-    server_thread.start()
+    runner, app = await webserver()
     
-    # Esperar que el servidor web inicie
-    time.sleep(2)
+    # 2. INICIAR BOT DE TELEGRAM
+    print("🤖 Iniciando bot de Telegram...")
+    botclient = Client('bot', api_id=api_id, api_hash=api_hash)
+    await botclient.start(bot_token=bot_token)
     
-    # Registrar handlers UNA SOLA VEZ
+    # 3. REGISTRAR HANDLERS
     register_handlers()
     
-    print("✅ Bot completamente inicializado")
-    print("🤖 Esperando mensajes de Telegram...")
+    print("✅ Todo inicializado correctamente")
+    print("📡 Bot escuchando en Telegram...")
+    print("🌐 Servidor web en puerto 5000")
     print("=" * 60)
     
-    # Ejecutar el bot principal
+    # 4. MANTENER AMBOS SERVICIOS ACTIVOS
     try:
-        botclient.run_until_disconnected()
-    except KeyboardInterrupt:
-        print("\n🛑 Bot detenido por usuario")
+        # Mantener el bot y el servidor web corriendo
+        await asyncio.gather(
+            botclient.run_until_disconnected(),
+            # Mantener el runner activo
+            asyncio.sleep(86400)  # 24 horas
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\n🛑 Deteniendo servicios...")
     except Exception as e:
         print(f"❌ Error crítico: {e}")
         traceback.print_exc()
     finally:
-        print("👋 Bot detenido")
+        # Limpiar
+        await runner.cleanup()
+        await botclient.disconnect()
+        print("👋 Servicios detenidos")
 
 if __name__ == "__main__":
     # Verificar ejecución única
@@ -600,4 +569,9 @@ if __name__ == "__main__":
         sys.exit(0)
     
     __name__._already_running = True
-    main()
+    
+    # Ejecutar con asyncio
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Programa terminado por el usuario")
