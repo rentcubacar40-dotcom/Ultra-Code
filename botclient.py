@@ -21,27 +21,49 @@ import threading
 import sys
 
 # Variables globales
-botclient = Client('bot', api_id=api_id, api_hash=api_hash).start(bot_token=bot_token)
+botclient = None
 userstatus = {}
+handler_registered = False
 
-# Servidor web para Render
+# ==================== SERVICIO WEB PARA RENDER ====================
 async def health_check(request):
     """Endpoint para verificaciones de salud"""
-    return web.Response(text='🤖 Bot Telegram activo y funcionando')
+    return web.Response(
+        text='🤖 Bot Telegram activo y funcionando\n📡 Puerto: 5000\n🔄 Estado: OK',
+        content_type='text/plain'
+    )
 
 async def webserver():
-    """Servidor web minimal para Render"""
+    """Servidor web forzando puerto 5000 para Render"""
     app = web.Application()
+    
+    # Agregar más endpoints para mejor monitoreo
     app.router.add_get('/', health_check)
     app.router.add_get('/health', health_check)
+    app.router.add_get('/status', lambda r: web.Response(text='Online'))
     
-    port = int(os.environ.get('PORT', 8080))
+    # FORZAR PUERTO 5000 - Render permite este puerto
+    port = 5000
+    
+    # Configurar opciones del servidor
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    print(f"✅ Servidor web escuchando en http://0.0.0.0:{port}")
-    return runner, site
+    
+    # Intentar con puerto 5000 específicamente
+    try:
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        print(f"✅ Servidor web en puerto {port} - http://0.0.0.0:{port}")
+        return runner, site
+    except OSError as e:
+        # Si falla el 5000, intentar con puerto dinámico
+        print(f"⚠️  Puerto {port} no disponible: {e}")
+        print("🔄 Intentando con puerto dinámico...")
+        port = int(os.environ.get('PORT', 10000))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        print(f"✅ Servidor web en puerto {port} - http://0.0.0.0:{port}")
+        return runner, site
 
 def run_webserver():
     """Ejecutar servidor web en hilo separado"""
@@ -50,6 +72,13 @@ def run_webserver():
         asyncio.set_event_loop(loop)
         runner, site = loop.run_until_complete(webserver())
         
+        # Información adicional
+        print("=" * 50)
+        print("🌐 SERVICIO WEB INICIADO")
+        print(f"📍 Puerto: {site._server.sockets[0].getsockname()[1]}")
+        print(f"📡 Host: 0.0.0.0")
+        print("=" * 50)
+        
         # Mantener el servidor activo
         try:
             loop.run_forever()
@@ -57,7 +86,9 @@ def run_webserver():
             print("🛑 Servidor web detenido")
     except Exception as e:
         print(f"❌ Error en servidor web: {e}")
+        traceback.print_exc()
 
+# ==================== FUNCIONES DEL BOT ====================
 def mydata(username):
     user = getusern(username)
     if user:
@@ -78,226 +109,284 @@ def mydata(username):
         msg += f"⚡ Proxy: {proxy}\n"
         return msg
 
-@botclient.on(events.NewMessage)
-async def messages(event):
-    username = event.message.chat.username
-    id = event.message.chat.id
-    msg = event.message.text
+def register_handlers():
+    """Registra los handlers UNA SOLA VEZ"""
+    global handler_registered
     
-    usernames = getusern(username)
-    if username == OWNER or usernames:
-        if usernames is None:
-            makeuser(username)
-    else:
-        await botclient.send_message(id, "❌ No tiene acceso ❌")
+    if handler_registered:
         return
     
-    userstatus[username] = {"statusdownload": "active"}
+    handler_registered = True
     
-    if msg.lower().startswith("/start"):
-        msgtext = f"Sea bienvenido al bot @{username}.\nUtilize /mydata para recordar sus datos🙌."
-        await event.reply(msgtext)
-    
-    if msg.lower().startswith("/acc"):
-        splitmsg = msg.split(" ")
+    @botclient.on(events.NewMessage)
+    async def messages(event):
+        # Evitar procesar mensajes antiguos
+        if event.message.date < (time.time() - 10):
+            return
         
-        if len(splitmsg) != 3:
-            await event.reply("❌ Fallo en la escritura del comando\n👉 /acc username password 👈.")
-        else:
-            usern = splitmsg[1]
-            password = splitmsg[2]
-            
-            user = getusern(username)
-            if user:
-                user["user"] = usern
-                user["passw"] = password
-                savedata(username, user)
-                message = mydata(username)
-                await event.reply(message)
-    
-    if msg.lower().startswith("/host"):
-        splitmsg = msg.split(" ")
+        username = event.message.chat.username
+        if not username:
+            return
         
-        if len(splitmsg) != 2:
-            await event.reply("❌ Fallo en la escritura del comando\n👉 /host https://moodle.dominio.cu 👈.")
-        else:
-            host = splitmsg[1]
-            
-            user = getusern(username)
-            if user:
-                user["host"] = host
-                savedata(username, user)
-                message = mydata(username)
-                await event.reply(message)
-    
-    if msg.lower().startswith("/repoid"):
-        splitmsg = msg.split(" ")
+        id = event.message.chat.id
+        msg = event.message.text
         
-        if len(splitmsg) != 2:
-            await event.reply("❌ Fallo en la escritura del comando\n👉 /repoid repoid 👈.")
-        else:
-            repoid = splitmsg[1]
-            
-            user = getusern(username)
-            if user:
-                user["repoid"] = repoid
-                savedata(username, user)
-                message = mydata(username)
-                await event.reply(message)
-    
-    if msg.lower().startswith("/proxy"):
-        splitmsg = msg.split(" ")
+        print(f"📨 [{time.strftime('%H:%M:%S')}] @{username}: {msg[:50]}")
         
-        if len(splitmsg) != 2:
-            await event.reply("❌ Fallo en la escritura del comando\n👉 /proxy proxy 👈.")
+        # Validar acceso
+        usernames = getusern(username)
+        if username == OWNER or usernames:
+            if usernames is None:
+                makeuser(username)
         else:
-            proxymsg = splitmsg[1]
-            proxys = proxyparsed(proxymsg)
-            proxy = f"socks5://{proxys}"
-            
-            user = getusern(username)
-            if user:
-                user["proxy"] = proxy
-                savedata(username, user)
-                message = mydata(username)
-                await event.reply(message)
-    
-    if msg.lower().startswith("/zips"):
-        splitmsg = msg.split(" ")
+            await botclient.send_message(id, "❌ No tiene acceso ❌")
+            return
         
-        if len(splitmsg) != 2:
-            await event.reply("❌ Fallo en la escritura del comando\n👉 /zips size 👈.")
-        else:
-            zips = splitmsg[1]
-            
-            user = getusern(username)
-            if user:
-                user["zips"] = zips
-                savedata(username, user)
-                message = mydata(username)
-                await event.reply(message)
-    
-    if msg.lower().startswith("/mydata"):
-        message = mydata(username)
-        await event.reply(message)
-    
-    if msg.lower().startswith("/add"):
-        splitmsg = msg.split(" ")
+        # Manejar comandos
+        if msg is None:
+            return
         
-        if len(splitmsg) != 2:
-            await event.reply("❌ Fallo en la escritura del comando\n👉 /add username 👈.")
-        else:
-            usuario = splitmsg[1]
-            
-            makeuser(usuario)
-            await event.reply(f"✅ Añadido @{usuario} al uso del bot.")
-    
-    if msg.lower().startswith("/ban"):
-        splitmsg = msg.split(" ")
+        msg_lower = msg.lower()
         
-        if len(splitmsg) != 2:
-            await event.reply("❌ Fallo en la escritura del comando\n👉 /ban username 👈.")
-        else:
-            usuario = splitmsg[1]
+        if msg_lower.startswith("/start"):
+            msgtext = f"Sea bienvenido al bot @{username}.\nUtilice /mydata para recordar sus datos🙌."
+            await event.reply(msgtext, link_preview=False)
+        
+        elif msg_lower.startswith("/acc"):
+            splitmsg = msg.split(" ")
             
-            outusern(usuario)
-            await event.reply("❌ Baneado @{usuario} del uso del bot.")
+            if len(splitmsg) != 3:
+                await event.reply("❌ Fallo en la escritura del comando\n👉 /acc username password 👈.", link_preview=False)
+            else:
+                usern = splitmsg[1]
+                password = splitmsg[2]
+                
+                user = getusern(username)
+                if user:
+                    user["user"] = usern
+                    user["passw"] = password
+                    savedata(username, user)
+                    message = mydata(username)
+                    await event.reply(message, link_preview=False)
+        
+        elif msg_lower.startswith("/host"):
+            splitmsg = msg.split(" ")
+            
+            if len(splitmsg) != 2:
+                await event.reply("❌ Fallo en la escritura del comando\n👉 /host https://moodle.dominio.cu 👈.", link_preview=False)
+            else:
+                host = splitmsg[1]
+                
+                user = getusern(username)
+                if user:
+                    user["host"] = host
+                    savedata(username, user)
+                    message = mydata(username)
+                    await event.reply(message, link_preview=False)
+        
+        elif msg_lower.startswith("/repoid"):
+            splitmsg = msg.split(" ")
+            
+            if len(splitmsg) != 2:
+                await event.reply("❌ Fallo en la escritura del comando\n👉 /repoid repoid 👈.", link_preview=False)
+            else:
+                repoid = splitmsg[1]
+                
+                user = getusern(username)
+                if user:
+                    user["repoid"] = repoid
+                    savedata(username, user)
+                    message = mydata(username)
+                    await event.reply(message, link_preview=False)
+        
+        elif msg_lower.startswith("/proxy"):
+            splitmsg = msg.split(" ")
+            
+            if len(splitmsg) != 2:
+                await event.reply("❌ Fallo en la escritura del comando\n👉 /proxy proxy 👈.", link_preview=False)
+            else:
+                proxymsg = splitmsg[1]
+                proxys = proxyparsed(proxymsg)
+                proxy = f"socks5://{proxys}"
+                
+                user = getusern(username)
+                if user:
+                    user["proxy"] = proxy
+                    savedata(username, user)
+                    message = mydata(username)
+                    await event.reply(message, link_preview=False)
+        
+        elif msg_lower.startswith("/zips"):
+            splitmsg = msg.split(" ")
+            
+            if len(splitmsg) != 2:
+                await event.reply("❌ Fallo en la escritura del comando\n👉 /zips size 👈.", link_preview=False)
+            else:
+                zips = splitmsg[1]
+                
+                user = getusern(username)
+                if user:
+                    user["zips"] = zips
+                    savedata(username, user)
+                    message = mydata(username)
+                    await event.reply(message, link_preview=False)
+        
+        elif msg_lower.startswith("/mydata"):
+            message = mydata(username)
+            await event.reply(message, link_preview=False)
+        
+        elif msg_lower.startswith("/add"):
+            splitmsg = msg.split(" ")
+            
+            if len(splitmsg) != 2:
+                await event.reply("❌ Fallo en la escritura del comando\n👉 /add username 👈.", link_preview=False)
+            else:
+                usuario = splitmsg[1]
+                
+                makeuser(usuario)
+                await event.reply(f"✅ Añadido @{usuario} al uso del bot.", link_preview=False)
+        
+        elif msg_lower.startswith("/ban"):
+            splitmsg = msg.split(" ")
+            
+            if len(splitmsg) != 2:
+                await event.reply("❌ Fallo en la escritura del comando\n👉 /ban username 👈.", link_preview=False)
+            else:
+                usuario = splitmsg[1]
+                
+                outusern(usuario)
+                await event.reply(f"❌ Baneado @{usuario} del uso del bot.", link_preview=False)
+        
+        elif msg_lower.startswith("http"):
+            await handle_download(event, username, id, msg)
+        
+        elif event.message.media:
+            await handle_media_download(event, username, id)
     
-    if msg.lower().startswith("https"):
+    @botclient.on(events.CallbackQuery)
+    async def callback(event):
+        username = event.chat.username
+        if event.data == b"cancelado":
+            user_key = f"{username}_{event.chat.id}"
+            if user_key in userstatus:
+                userstatus[user_key]["statusdownload"] = "pasive"
+
+# ==================== FUNCIONES AUXILIARES ====================
+async def handle_download(event, username, id, url):
+    """Manejar descargas HTTP"""
+    try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(msg) as response:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    await event.reply("❌ Error al descargar el archivo")
+                    return
+                
                 try:
                     name = response.content_disposition.filename
                 except:
-                    name = msg.split("/")[-1]
+                    name = url.split("/")[-1]
                 
-                size = int(response.headers.get("content-length"))
+                size = int(response.headers.get("content-length", 0))
                 
                 message = await botclient.send_message(id, "💠 Preparando descarga 💠")
                 
-                if os.path.exists(username):
-                    pass
-                else:
+                if not os.path.exists(username):
                     os.mkdir(username)
                 
                 userpath = username
                 pathfull = os.path.join(os.getcwd(), userpath, name)
-                fi = await aiofiles.open(pathfull, "wb")
-                chunkcurrent = 0
-                starttime = time.time()
-                secs = 0
-                async for chunk in response.content.iter_chunked(1024 * 1024):
-                    if userstatus[username]["statusdownload"] != "active":
-                        break
-                    chunkcurrent += len(chunk)
-                    currenttime = time.time() - starttime
-                    speed = chunkcurrent / currenttime
-                    secs += len(chunk)
-                    
-                    if secs >= 5242880:
-                        await downloadprogressmust(chunkcurrent, size, speed, message, name)
-                        secs = 0
-                    await fi.write(chunk)
-                fi.close()
                 
-                if userstatus[username]["statusdownload"] == "active":
+                async with aiofiles.open(pathfull, "wb") as fi:
+                    chunkcurrent = 0
+                    starttime = time.time()
+                    secs = 0
+                    
+                    user_key = f"{username}_{id}"
+                    async for chunk in response.content.iter_chunked(1024 * 1024):
+                        if userstatus.get(user_key, {}).get("statusdownload") != "active":
+                            break
+                        
+                        chunkcurrent += len(chunk)
+                        currenttime = time.time() - starttime
+                        speed = chunkcurrent / currenttime if currenttime > 0 else 0
+                        secs += len(chunk)
+                        
+                        if secs >= 5242880:
+                            await downloadprogressmust(chunkcurrent, size, speed, message, name)
+                            secs = 0
+                        
+                        await fi.write(chunk)
+                
+                if userstatus.get(user_key, {}).get("statusdownload") == "active":
                     await botclient.edit_message(message, "✅ Descarga Finalizada ✅")
                     await upload(pathfull, message, username)
                 else:
-                    await botclient.edit_message(message, "❌ Descarga Eliminada ❌")
-    
-    if event.message.media:
-        name = event.file.name
+                    await botclient.edit_message(message, "❌ Descarga Cancelada ❌")
+                    if os.path.exists(pathfull):
+                        os.remove(pathfull)
+                        
+    except Exception as e:
+        print(f"❌ Error en descarga: {e}")
+        await event.reply(f"❌ Error al procesar la descarga: {str(e)}")
+
+async def handle_media_download(event, username, id):
+    """Manejar descargas de media de Telegram"""
+    try:
+        name = event.file.name or f"media_{int(time.time())}"
         size = event.file.size
         
         message = await botclient.send_message(id, "💠 Preparando descarga 💠")
         
-        if os.path.exists(username):
-            pass
-        else:
+        if not os.path.exists(username):
             os.mkdir(username)
         
         userpath = username
         pathfull = os.path.join(os.getcwd(), userpath, name)
-        fi = open(pathfull, "wb")
-        chunkcurrent = 0
-        starttime = time.time()
-        secs = 0
-        async for chunk in botclient.iter_download(event.message.media, chunk_size=1024 * 1024):
-            if userstatus[username]["statusdownload"] != "active":
-                break
-            chunkcurrent += len(chunk)
-            currenttime = time.time() - starttime
-            speed = chunkcurrent / currenttime
-            secs += len(chunk)
-            
-            if secs >= 5242880:
-                await downloadprogressmust(chunkcurrent, size, speed, message, name)
-                secs = 0
-            fi.write(chunk)
-        fi.close()
         
-        if userstatus[username]["statusdownload"] == "active":
+        with open(pathfull, "wb") as fi:
+            chunkcurrent = 0
+            starttime = time.time()
+            secs = 0
+            
+            user_key = f"{username}_{id}"
+            async for chunk in botclient.iter_download(event.message.media, chunk_size=1024 * 1024):
+                if userstatus.get(user_key, {}).get("statusdownload") != "active":
+                    break
+                
+                chunkcurrent += len(chunk)
+                currenttime = time.time() - starttime
+                speed = chunkcurrent / currenttime if currenttime > 0 else 0
+                secs += len(chunk)
+                
+                if secs >= 5242880:
+                    await downloadprogressmust(chunkcurrent, size, speed, message, name)
+                    secs = 0
+                
+                fi.write(chunk)
+        
+        if userstatus.get(user_key, {}).get("statusdownload") == "active":
             await botclient.edit_message(message, "✅ Descarga Finalizada ✅")
             await upload(pathfull, message, username)
         else:
-            await botclient.edit_message(message, "❌ Descarga Eliminada ❌")
-
-@botclient.on(events.CallbackQuery)
-async def callback(event):
-    username = event.chat.username
-    if event.data == b"cancelado":
-        userstatus[username]["statusdownload"] = "pasive"
+            await botclient.edit_message(message, "❌ Descarga Cancelada ❌")
+            if os.path.exists(pathfull):
+                os.remove(pathfull)
+                
+    except Exception as e:
+        print(f"❌ Error en descarga de media: {e}")
+        await event.reply(f"❌ Error al procesar el archivo: {str(e)}")
 
 async def downloadprogressmust(chunkcurrent, size, speed, message, name):
     buttons = [[Button.inline("❌ Cancelar ❌", "cancelado")]]
     bytesnormalsize = convertbytes(size)
     bytesnormalcurrent = convertbytes(chunkcurrent)
     bytesnormalspeed = convertbytes(speed)
+    
     msgprogress = f"📌 File Name: {name}\n\n"
     msgprogress += f"📦 File Size: {bytesnormalsize}\n\n"
     msgprogress += f"📥 Downloading: {bytesnormalcurrent}\n\n"
     msgprogress += f"⚡ Speed: {bytesnormalspeed}/s"
+    
     try:
         await botclient.edit_message(message, msgprogress, buttons=buttons)
     except:
@@ -460,31 +549,55 @@ def convertbytes(size):
     
     return normalbytes
 
+# ==================== MAIN ====================
 def main():
-    """Función principal mejorada"""
-    print("🚀 Iniciando Bot de Telegram...")
-    print(f"👤 Owner: {OWNER}")
+    """Función principal"""
+    global botclient
     
-    # Iniciar servidor web para Render
+    print("=" * 60)
+    print("🚀 INICIANDO BOT DE TELEGRAM CON PUERTO 5000")
+    print("=" * 60)
+    print(f"👤 Owner: {OWNER}")
+    print(f"📡 Puerto forzado: 5000")
+    print(f"🕐 Hora: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+    
+    # Inicializar el cliente UNA SOLA VEZ
+    if botclient is None:
+        botclient = Client('bot', api_id=api_id, api_hash=api_hash)
+        botclient.start(bot_token=bot_token)
+    
+    # Iniciar servidor web en puerto 5000
+    print("🌐 Iniciando servidor web en puerto 5000...")
     server_thread = threading.Thread(target=run_webserver, daemon=True)
     server_thread.start()
     
-    print("✅ Servidor web iniciado en segundo plano")
+    # Esperar que el servidor web inicie
+    time.sleep(2)
     
-    # Dar tiempo al servidor para iniciar
-    time.sleep(1)
+    # Registrar handlers UNA SOLA VEZ
+    register_handlers()
+    
+    print("✅ Bot completamente inicializado")
+    print("🤖 Esperando mensajes de Telegram...")
+    print("=" * 60)
     
     # Ejecutar el bot principal
     try:
-        print("🤖 Conectando a Telegram...")
         botclient.run_until_disconnected()
     except KeyboardInterrupt:
-        print("\n👋 Bot detenido por usuario")
+        print("\n🛑 Bot detenido por usuario")
     except Exception as e:
         print(f"❌ Error crítico: {e}")
-        print(traceback.format_exc())
+        traceback.print_exc()
     finally:
         print("👋 Bot detenido")
 
 if __name__ == "__main__":
+    # Verificar ejecución única
+    if hasattr(__name__, '_already_running'):
+        print("⚠️  El bot ya está en ejecución")
+        sys.exit(0)
+    
+    __name__._already_running = True
     main()
