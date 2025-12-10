@@ -1,0 +1,8 @@
+telethon
+aiohttp
+aiofiles
+aiohttp_socks
+cryptg
+bs4
+yarl
+ujson
