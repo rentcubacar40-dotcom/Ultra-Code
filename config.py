@@ -1,12 +1,12 @@
 ######################
-api_id = 19961504
-api_hash = "28de3a8f4b68b388bfe47bf84d1b124b"
-bot_token = "5361532937:AAHar232-6BrUv11jxemQmZbeytcxI5GOeI"
+api_id = 20534584
+api_hash = "6d5b13261d2c92a9a00afc1fd613b9df"
+bot_token = "8181002237:AAFNWamFKqGI9dHXSEpzAxTNmUc0bz6S0Sc"
 
 users = {}
 
 ######################
-OWNER = "anonedev"
+OWNER = "Eliel_21"
 
 def makeuser(usern):
 	users[usern] = {"user":"__Sin Definir__",
